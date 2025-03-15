@@ -37,6 +37,33 @@ export default function NewItem() {
         .single();
 
       if (error) {
+        console.error('Error checking profile:', error);
+        
+        // Try to create profile if not found
+        if (error.code === 'PGRST116') {
+          const { data: newProfile, error: createError } = await supabase
+            .from('profiles')
+            .insert({
+              id: user?.id,
+              username: `user_${user?.id?.substring(0, 8)}`,
+              reputation_score: 0,
+              trades_completed: 0,
+              created_at: new Date().toISOString()
+            })
+            .select()
+            .single();
+            
+          if (createError) {
+            console.error('Error creating profile:', createError);
+            setError('Error creating profile. Please try again or visit your profile page.');
+            navigate('/profile');
+            return;
+          }
+          
+          setProfileChecked(true);
+          return;
+        }
+        
         throw error;
       }
 
@@ -46,6 +73,7 @@ export default function NewItem() {
 
       setProfileChecked(true);
     } catch (err) {
+      console.error('Profile check error:', err);
       setError('Please complete your profile before listing items');
       navigate('/profile');
     }

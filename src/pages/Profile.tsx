@@ -30,22 +30,56 @@ export default function Profile() {
   async function loadProfile() {
     if (!user) return;
 
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', user.id)
-      .single();
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .single();
 
-    setLoading(false);
+      setLoading(false);
 
-    if (error) {
-      setError('Failed to load profile');
-      return;
+      if (error) {
+        console.error('Error loading profile:', error);
+        setError('Failed to load profile');
+        return;
+      }
+
+      if (!data) {
+        // Create profile if it doesn't exist
+        const { data: newProfile, error: createError } = await supabase
+          .from('profiles')
+          .insert({
+            id: user.id,
+            username: `user_${user.id.substring(0, 8)}`,
+            avatar_url: null,
+            reputation_score: 0,
+            trades_completed: 0,
+            created_at: new Date().toISOString()
+          })
+          .select()
+          .single();
+          
+        if (createError) {
+          console.error('Error creating profile:', createError);
+          setError('Failed to create profile');
+          return;
+        }
+        
+        setProfile(newProfile);
+        setUsername(newProfile.username);
+        setAvatarUrl(newProfile.avatar_url);
+        return;
+      }
+
+      setProfile(data);
+      setUsername(data.username);
+      setAvatarUrl(data.avatar_url);
+    } catch (err) {
+      console.error('Unexpected error:', err);
+      setLoading(false);
+      setError('An unexpected error occurred');
     }
-
-    setProfile(data);
-    setUsername(data.username);
-    setAvatarUrl(data.avatar_url);
   }
 
   async function handleUpdateProfile(e: React.FormEvent) {
