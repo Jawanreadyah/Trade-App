@@ -20,65 +20,82 @@ export default function Profile() {
   const [username, setUsername] = useState('');
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
     if (user) {
       loadProfile();
+    } else {
+      // Clear loading state if no user
+      setLoading(false);
     }
-  }, [user]);
+  }, [user, retryCount]);
 
   async function loadProfile() {
-    if (!user) return;
+    if (!user) {
+      setLoading(false);
+      return;
+    }
 
     try {
+      setLoading(true);
+      setError('');
+      
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', user.id)
         .single();
 
-      setLoading(false);
-
       if (error) {
         console.error('Error loading profile:', error);
-        setError('Failed to load profile');
-        return;
-      }
-
-      if (!data) {
-        // Create profile if it doesn't exist
-        const { data: newProfile, error: createError } = await supabase
-          .from('profiles')
-          .insert({
-            id: user.id,
-            username: `user_${user.id.substring(0, 8)}`,
-            avatar_url: null,
-            reputation_score: 0,
-            trades_completed: 0,
-            created_at: new Date().toISOString()
-          })
-          .select()
-          .single();
-          
-        if (createError) {
-          console.error('Error creating profile:', createError);
-          setError('Failed to create profile');
+        
+        // Only try to create a profile if it doesn't exist
+        if (error.code === 'PGRST116') {
+          try {
+            const { data: newProfile, error: createError } = await supabase
+              .from('profiles')
+              .insert({
+                id: user.id,
+                username: `user_${user.id.substring(0, 8)}`,
+                avatar_url: null,
+                reputation_score: 0,
+                trades_completed: 0,
+                created_at: new Date().toISOString()
+              })
+              .select()
+              .single();
+              
+            if (createError) {
+              throw createError;
+            }
+            
+            setProfile(newProfile);
+            setUsername(newProfile.username);
+            setAvatarUrl(newProfile.avatar_url);
+            setLoading(false);
+            return;
+          } catch (createErr) {
+            console.error('Error creating profile:', createErr);
+            setError('Failed to create profile. Please try again.');
+            setLoading(false);
+            return;
+          }
+        } else {
+          setError('Failed to load profile. Please try again.');
+          setLoading(false);
           return;
         }
-        
-        setProfile(newProfile);
-        setUsername(newProfile.username);
-        setAvatarUrl(newProfile.avatar_url);
-        return;
       }
 
       setProfile(data);
       setUsername(data.username);
       setAvatarUrl(data.avatar_url);
+      setLoading(false);
     } catch (err) {
       console.error('Unexpected error:', err);
+      setError('An unexpected error occurred. Please try again.');
       setLoading(false);
-      setError('An unexpected error occurred');
     }
   }
 
@@ -89,48 +106,62 @@ export default function Profile() {
     setLoading(true);
     setError('');
 
-    const { error } = await supabase
-      .from('profiles')
-      .update({
-        username,
-        avatar_url: avatarUrl,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', user.id);
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .update({
+          username,
+          avatar_url: avatarUrl,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', user.id);
 
-    setLoading(false);
+      if (error) {
+        throw error;
+      }
 
-    if (error) {
-      setError('Failed to update profile');
-      return;
+      setEditing(false);
+      loadProfile();
+    } catch (err) {
+      console.error('Error updating profile:', err);
+      setError('Failed to update profile. Please try again.');
+      setLoading(false);
     }
-
-    setEditing(false);
-    loadProfile();
   }
 
   async function handleAvatarChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const fileExt = file.name.split('.').pop();
-    const fileName = `${Math.random()}.${fileExt}`;
-    const filePath = `${user?.id}/${fileName}`;
+    try {
+      setLoading(true);
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${Math.random()}.${fileExt}`;
+      const filePath = `${user?.id}/${fileName}`;
 
-    const { error: uploadError } = await supabase.storage
-      .from('avatars')
-      .upload(filePath, file);
+      const { error: uploadError } = await supabase.storage
+        .from('avatars')
+        .upload(filePath, file);
 
-    if (uploadError) {
-      setError('Failed to upload avatar');
-      return;
+      if (uploadError) {
+        throw uploadError;
+      }
+
+      const { data } = supabase.storage
+        .from('avatars')
+        .getPublicUrl(filePath);
+
+      setAvatarUrl(data.publicUrl);
+      setLoading(false);
+    } catch (err) {
+      console.error('Error uploading avatar:', err);
+      setError('Failed to upload avatar. Please try again.');
+      setLoading(false);
     }
+  }
 
-    const { data } = supabase.storage
-      .from('avatars')
-      .getPublicUrl(filePath);
-
-    setAvatarUrl(data.publicUrl);
+  function handleRetry() {
+    setRetryCount((prevCount: number) => prevCount + 1);
   }
 
   if (loading) {
@@ -145,11 +176,34 @@ export default function Profile() {
     );
   }
 
+  if (error) {
+    return (
+      <div className="text-center py-12">
+        <h2 className="text-xl font-semibold text-gray-900 mb-2">Profile Error</h2>
+        <p className="text-gray-600 mb-4">{error}</p>
+        <button 
+          onClick={handleRetry}
+          className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+        >
+          <RefreshCw className="h-4 w-4 mr-2" />
+          Try Again
+        </button>
+      </div>
+    );
+  }
+
   if (!profile) {
     return (
       <div className="text-center py-12">
         <h2 className="text-xl font-semibold text-gray-900 mb-2">Profile Not Found</h2>
-        <p className="text-gray-600">Please try again later.</p>
+        <p className="text-gray-600 mb-4">We couldn't find your profile information.</p>
+        <button 
+          onClick={handleRetry}
+          className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+        >
+          <RefreshCw className="h-4 w-4 mr-2" />
+          Try Again
+        </button>
       </div>
     );
   }

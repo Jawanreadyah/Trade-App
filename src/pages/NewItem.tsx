@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../lib/supabaseClient';
-import { Camera, AlertCircle, Loader2 } from 'lucide-react';
+import { Camera, AlertCircle, Loader2, RefreshCw } from 'lucide-react';
 
 const CONDITIONS = ['New', 'Like New', 'Good', 'Fair', 'Poor'];
 const CATEGORIES = ['Electronics', 'Fashion', 'Books', 'Sports', 'Home', 'Games', 'Other'];
@@ -13,6 +13,8 @@ export default function NewItem() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [profileChecked, setProfileChecked] = useState(false);
+  const [profileLoading, setProfileLoading] = useState(true);
+  const [retryCount, setRetryCount] = useState(0);
   
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -25,58 +27,83 @@ export default function NewItem() {
   useEffect(() => {
     if (user) {
       checkProfile();
+    } else {
+      // Clear loading state if no user
+      setProfileLoading(false);
     }
-  }, [user]);
+  }, [user, retryCount]);
 
   async function checkProfile() {
+    if (!user) {
+      setProfileLoading(false);
+      return;
+    }
+
+    setProfileLoading(true);
+    setError('');
+    
     try {
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
-        .eq('id', user?.id)
+        .eq('id', user.id)
         .single();
 
       if (error) {
         console.error('Error checking profile:', error);
         
-        // Try to create profile if not found
+        // Only try to create profile if not found
         if (error.code === 'PGRST116') {
-          const { data: newProfile, error: createError } = await supabase
-            .from('profiles')
-            .insert({
-              id: user?.id,
-              username: `user_${user?.id?.substring(0, 8)}`,
-              reputation_score: 0,
-              trades_completed: 0,
-              created_at: new Date().toISOString()
-            })
-            .select()
-            .single();
+          try {
+            const { data: newProfile, error: createError } = await supabase
+              .from('profiles')
+              .insert({
+                id: user.id,
+                username: `user_${user.id.substring(0, 8)}`,
+                reputation_score: 0,
+                trades_completed: 0,
+                created_at: new Date().toISOString()
+              })
+              .select()
+              .single();
+              
+            if (createError) {
+              throw createError;
+            }
             
-          if (createError) {
-            console.error('Error creating profile:', createError);
-            setError('Error creating profile. Please try again or visit your profile page.');
-            navigate('/profile');
+            setProfileChecked(true);
+            setProfileLoading(false);
+            return;
+          } catch (createErr) {
+            console.error('Error creating profile:', createErr);
+            setError('Error creating profile. Please try again.');
+            setProfileLoading(false);
             return;
           }
-          
-          setProfileChecked(true);
+        } else {
+          setError('Failed to load your profile. Please try again.');
+          setProfileLoading(false);
           return;
         }
-        
-        throw error;
       }
 
       if (!data) {
-        throw new Error('Profile not found');
+        setError('Profile not found. Please try again or visit your profile page.');
+        setProfileLoading(false);
+        return;
       }
 
       setProfileChecked(true);
+      setProfileLoading(false);
     } catch (err) {
       console.error('Profile check error:', err);
-      setError('Please complete your profile before listing items');
-      navigate('/profile');
+      setError('Error loading profile. Please try again.');
+      setProfileLoading(false);
     }
+  }
+
+  function handleRetry() {
+    setRetryCount((prevCount: number) => prevCount + 1);
   }
 
   async function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
@@ -85,17 +112,18 @@ export default function NewItem() {
 
     setLoading(true);
     setUploadProgress(0);
+    setError('');
     const newImageUrls: string[] = [];
 
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      if (!file.type.startsWith('image/')) continue;
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        if (!file.type.startsWith('image/')) continue;
 
-      const fileExt = file.name.split('.').pop();
-      const fileName = `${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
-      const filePath = `${user.id}/${fileName}`;
+        const fileExt = file.name.split('.').pop();
+        const fileName = `${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
+        const filePath = `${user.id}/${fileName}`;
 
-      try {
         setUploadProgress(Math.round((i / files.length) * 100));
 
         const { error: uploadError } = await supabase.storage
@@ -109,17 +137,16 @@ export default function NewItem() {
           .getPublicUrl(filePath);
 
         newImageUrls.push(data.publicUrl);
-      } catch (err) {
-        console.error('Error uploading image:', err);
-        setError('Failed to upload image. Please try again.');
-        setLoading(false);
-        return;
       }
-    }
 
-    setImageUrls([...imageUrls, ...newImageUrls]);
-    setLoading(false);
-    setUploadProgress(0);
+      setImageUrls([...imageUrls, ...newImageUrls]);
+    } catch (err) {
+      console.error('Error uploading image:', err);
+      setError('Failed to upload image. Please try again.');
+    } finally {
+      setLoading(false);
+      setUploadProgress(0);
+    }
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -175,10 +202,38 @@ export default function NewItem() {
     return null;
   }
 
-  if (!profileChecked) {
+  if (profileLoading) {
     return (
-      <div className="flex items-center justify-center min-h-screen">
-        <Loader2 className="h-8 w-8 animate-spin text-indigo-600" />
+      <div className="flex flex-col items-center justify-center min-h-screen">
+        <Loader2 className="h-8 w-8 animate-spin text-indigo-600 mb-4" />
+        <p className="text-gray-600">Loading your profile...</p>
+      </div>
+    );
+  }
+
+  if (error && !profileChecked) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen">
+        <div className="max-w-md w-full bg-white shadow-md rounded-lg p-6 text-center">
+          <AlertCircle className="h-12 w-12 text-red-500 mx-auto mb-4" />
+          <h2 className="text-xl font-bold text-gray-900 mb-2">Profile Error</h2>
+          <p className="text-gray-600 mb-6">{error}</p>
+          <div className="flex space-x-4 justify-center">
+            <button 
+              onClick={handleRetry}
+              className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+            >
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Try Again
+            </button>
+            <button 
+              onClick={() => navigate('/profile')}
+              className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+            >
+              Go to Profile
+            </button>
+          </div>
+        </div>
       </div>
     );
   }
@@ -195,54 +250,65 @@ export default function NewItem() {
       )}
 
       <form onSubmit={handleSubmit} className="space-y-6">
-        <div>
+        <div className="mb-6">
           <label className="block text-sm font-medium text-gray-700 mb-1">
-            Item Photos
+            Images
           </label>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
-            {imageUrls.map((url, index) => (
-              <div key={index} className="relative aspect-square">
-                <img
-                  src={url}
-                  alt={`Item preview ${index + 1}`}
-                  className="w-full h-full object-cover rounded-lg"
+          
+          <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-4">
+            {imageUrls.map((url: string, index: number) => (
+              <div 
+                key={index} 
+                className="relative rounded-lg overflow-hidden h-24 bg-gray-100 border border-gray-200"
+              >
+                <img 
+                  src={url} 
+                  alt={`Item image ${index + 1}`} 
+                  className="h-full w-full object-cover"
                 />
                 <button
                   type="button"
-                  onClick={() => setImageUrls(imageUrls.filter((_, i) => i !== index))}
-                  className="absolute top-1 right-1 bg-red-600 text-white p-1 rounded-full hover:bg-red-700 transition-colors"
+                  onClick={() => {
+                    const updatedUrls = [...imageUrls];
+                    updatedUrls.splice(index, 1);
+                    setImageUrls(updatedUrls);
+                  }}
+                  className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 shadow hover:bg-red-600"
                 >
-                  ×
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                  </svg>
                 </button>
               </div>
             ))}
-            {imageUrls.length < 4 && (
-              <label className="border-2 border-dashed border-gray-300 rounded-lg flex items-center justify-center cursor-pointer hover:border-indigo-500 transition-colors">
-                <div className="text-center p-4">
-                  {loading ? (
-                    <>
-                      <Loader2 className="h-8 w-8 text-indigo-500 mx-auto mb-2 animate-spin" />
-                      <span className="text-sm text-gray-500">{uploadProgress}%</span>
-                    </>
-                  ) : (
-                    <>
-                      <Camera className="h-8 w-8 text-gray-400 mx-auto mb-2" />
-                      <span className="text-sm text-gray-500">Add Photo</span>
-                    </>
-                  )}
+            
+            <label className="relative block border-2 border-dashed border-gray-300 rounded-lg h-24 bg-gray-50 hover:bg-gray-100 cursor-pointer">
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={handleImageUpload}
+                className="sr-only"
+              />
+              <div className="flex items-center justify-center h-full">
+                <Camera className="h-6 w-6 text-gray-400" />
+              </div>
+              {loading && (
+                <div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-75">
+                  <div className="h-1.5 w-24 bg-gray-200 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-indigo-600"
+                      style={{ width: `${uploadProgress}%` }}
+                    ></div>
+                  </div>
                 </div>
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  onChange={handleImageUpload}
-                  className="hidden"
-                  disabled={loading}
-                />
-              </label>
-            )}
+              )}
+            </label>
           </div>
-          <p className="text-sm text-gray-500">Add up to 4 photos of your item</p>
+          
+          <p className="mt-1 text-sm text-gray-500">
+            Add up to 5 images of your item
+          </p>
         </div>
 
         <div>
